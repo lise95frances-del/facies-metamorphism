@@ -28,14 +28,37 @@ def conv(pts):
     return [(to_T(x), to_P(y)) for x, y in pts]
 
 
+def smooth_curve(curve, sigma=9.0, step=2.0):
+    """Lisse une courbe [(T, P), ...] : rééchantillonnage régulier puis moyenne gaussienne
+    le long de la courbe (calculée en pixels), extrémités conservées."""
+    px = np.array([(X0 + KX * t, Y0 - KY * p) for t, p in curve])
+    seg = np.hypot(*np.diff(px, axis=0).T)
+    s = np.concatenate([[0], np.cumsum(seg)])
+    n = max(int(s[-1] / step), 2)
+    su = np.linspace(0, s[-1], n + 1)
+    x = np.interp(su, s, px[:, 0])
+    y = np.interp(su, s, px[:, 1])
+    k = min(int(3 * sigma / step), n - 1)
+    w = np.exp(-0.5 * (np.arange(-k, k + 1) * step / sigma) ** 2)
+    w /= w.sum()
+
+    def sm(v):
+        left = 2 * v[0] - v[1:k + 1][::-1]
+        right = 2 * v[-1] - v[-k - 1:-1][::-1]
+        return np.convolve(np.concatenate([left, v, right]), w, mode="valid")
+
+    x, y = sm(x), sm(y)
+    return [(to_T(a), to_P(b)) for a, b in zip(x, y)]
+
+
 # Limite gauche (schiste bleu) -> sommet de l'arche
 G1 = conv([(58, 535), (63, 520), (68, 505), (73, 490), (78, 475), (82, 460), (87, 445),
            (92, 430), (100, 400), (106, 385), (111, 370), (116, 355), (121, 340), (130, 310),
            (135, 295), (140, 280), (145, 265), (149, 250), (154, 235), (159, 220), (164, 205),
            (168, 190), (173, 175), (178, 160), (183, 145), (188, 130), (192, 115), (197, 100),
-           (202, 85), (209, 70), (212, 55), (216, 43)])
+           (202, 85), (209, 70), (212, 55), (215, 40), (217, 20)])
 # Descente de l'arche : schiste bleu / éclogite, puis schiste vert / amphibolite à épidote
-A = conv([(216, 43), (218, 62), (223, 85), (235, 100), (246, 115), (256, 130), (266, 145),
+A = conv([(217, 20), (217, 45), (218, 62), (223, 85), (235, 100), (246, 115), (256, 130), (266, 145),
           (276, 160), (285, 175), (294, 190), (302, 205), (310, 220), (318, 235), (326, 265),
           (329, 280), (333, 295), (335, 310), (337, 325), (339, 340), (340, 355), (340, 370),
           (339, 385), (338, 400), (336, 415), (336, 430), (332, 445), (322, 460), (318, 475),
@@ -60,6 +83,18 @@ C = conv([(509, 100), (513, 115), (512, 130), (512, 145), (512, 160), (510, 190)
           (483, 340), (480, 355), (475, 370), (471, 385), (466, 400), (460, 415), (454, 430),
           (448, 445), (440, 460), (432, 475), (422, 490), (413, 505), (403, 520), (393, 535),
           (388, 545)])
+
+# --- Lissage des courbes relevées à la main (supprime les petits tremblements) ---
+_ga = smooth_curve(G1 + A[1:], sigma=10)
+_apex = int(np.argmax([p for _, p in _ga]))
+G1 = _ga[:_apex + 1]
+A = _ga[_apex:]
+P2 = smooth_curve(P2, sigma=8)
+P1 = smooth_curve(P1, sigma=8)
+B = smooth_curve(B, sigma=9)
+C = smooth_curve(C, sigma=9)
+_i = next(i for i, (t, p) in enumerate(P2) if p < to_P(340))
+D_CLS = P2[:_i] + [(to_T(192), to_P(340)), (to_T(600), to_P(26))]
 
 # Lignes noires : aluminosilicates (And / Ky / Sil)
 L1 = conv([(158.5, 573.5), (368.7, 434.8)])
@@ -187,7 +222,7 @@ with st.sidebar:
         st.write(f"Température correspondante : **{T:.0f} °C**")
 
     st.header("Affichage")
-    show_assemblages = st.checkbox("Afficher les paragenèses sur le graphique", value=True)
+    show_assemblages = st.checkbox("Afficher les paragenèses (assemblages minéralogiques)", value=True)
     shown = st.multiselect("Gradients métamorphiques à tracer", list(GRADIENTS), default=[])
     if followed and followed not in shown:
         shown.append(followed)
@@ -216,14 +251,15 @@ def add_line(curve, color, width, spline=True, name=None, dash=None, hover=False
 
 
 for band in (G1 + A[1:], P2, P1, D_LINE, B, C):
-    add_line(band, GREY, 15, spline=len(band) > 2)
+    add_line(band, GREY, 15, spline=False)
 for ln in (L1, L2, L3):
     add_line(ln, BLACK, 1.5, spline=False)
 
 # Gradients métamorphiques
 for gname in shown:
     g = GRADIENTS[gname]
-    add_line(list(g["pts"]), g["color"], 4, name=gname, dash="dash", hover=True)
+    add_line(smooth_curve(list(g["pts"]), sigma=12, step=3), g["color"], 4,
+             spline=False, name=gname, dash="dash", hover=True)
 
 
 def label(x, y, text, color=BLACK, size=13, bold=False, key=None):
@@ -296,7 +332,7 @@ fig.add_trace(
 
 fig.update_layout(
     font=dict(color="black", family="Arial", size=14),
-    title=dict(text="<b>METABASITES</b>", x=0.5, font=dict(size=22, color="black")),
+    title=dict(text="<b>MÉTABASITES</b>", x=0.5, font=dict(size=22, color="black")),
     plot_bgcolor="white",
     paper_bgcolor="white",
     height=760,
